@@ -2,18 +2,27 @@ package otgorm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jinzhu/gorm"
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
+	"github.com/opentracing/opentracing-go/log"
 )
 
 const (
-	parentSpanGormKey = "opentracingParentSpan"
-	spanGormKey       = "opentracingSpan"
+	parentSpanGormKey        = "opentracingParentSpan"
+	spanGormKey              = "opentracingSpan"
+	sqlVarsTruncationGormKey = "opentracingSqlVarsTruncation"
 )
+
+type SqlVarsTruncationConfig struct {
+	StrLen       int
+	ByteSliceLen int
+}
 
 // SetSpanToGorm sets span to gorm settings, returns cloned DB
 func SetSpanToGorm(ctx context.Context, db *gorm.DB) *gorm.DB {
@@ -35,6 +44,10 @@ func AddGormCallbacks(db *gorm.DB) {
 	registerCallbacks(db, "update", callbacks)
 	registerCallbacks(db, "delete", callbacks)
 	registerCallbacks(db, "row_query", callbacks)
+}
+
+func SetSqlVarsTruncationConfig(db *gorm.DB, conf SqlVarsTruncationConfig) *gorm.DB {
+	return db.Set(sqlVarsTruncationGormKey, conf)
 }
 
 type callbacks struct{}
@@ -77,6 +90,31 @@ func (c *callbacks) after(scope *gorm.Scope, operation string) {
 	}
 	ext.Error.Set(sp, scope.HasError())
 	ext.DBStatement.Set(sp, scope.SQL)
+	ext.DBInstance.Set(sp, scope.Dialect().CurrentDatabase())
+	if len(scope.SQLVars) > 0 {
+		var sqlVars []byte
+		val, ok = scope.Get(sqlVarsTruncationGormKey)
+		if ok {
+			conf := val.(SqlVarsTruncationConfig)
+			sqlVarsCopy := scope.SQLVars
+			for key, value := range sqlVarsCopy {
+				switch v := value.(type) {
+				case string:
+					if utf8.RuneCountInString(value.(string)) > conf.StrLen {
+						sqlVarsCopy[key] = string([]rune(value.(string))[:conf.StrLen])
+					}
+				case []byte:
+					if len(v) > conf.ByteSliceLen { // byte slice
+						sqlVarsCopy[key] = value.([]byte)[:conf.ByteSliceLen]
+					}
+				}
+			}
+			sqlVars, _ = json.Marshal(sqlVarsCopy)
+		} else {
+			sqlVars, _ = json.Marshal(scope.SQLVars)
+		}
+		sp.LogFields(log.String("db.sql_vars", string(sqlVars)))
+	}
 	sp.SetTag("db.table", scope.TableName())
 	sp.SetTag("db.method", operation)
 	sp.SetTag("db.err", scope.HasError())
