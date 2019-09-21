@@ -90,7 +90,6 @@ func (c *callbacks) after(scope *gorm.Scope, operation string) {
 	}
 	ext.Error.Set(sp, scope.HasError())
 	ext.DBStatement.Set(sp, scope.SQL)
-	ext.DBInstance.Set(sp, scope.Dialect().CurrentDatabase())
 	if len(scope.SQLVars) > 0 {
 		var sqlVars []byte
 		val, ok = scope.Get(sqlVarsTruncationGormKey)
